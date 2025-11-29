@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: orderflow_recorder
+    ports:
+      - "5432:5432"
+
+  recorder:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DB_URL: postgresql+psycopg2://postgres:postgres@db:5432/orderflow_recorder
+      LOG_LEVEL: INFO
+    restart: always
+
+
