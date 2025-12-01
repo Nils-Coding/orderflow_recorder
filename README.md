@@ -16,7 +16,6 @@ Ein schlanker, aber erweiterbarer Python-Service, der Ã¶ffentliche Binance USDTâ
 Voraussetzungen: Python 3.11 und Poetry installiert.
 
 ```bash
-cd /Users/nilss/Documents/Code/michi/orderflow_recorder
 poetry install
 ```
 
