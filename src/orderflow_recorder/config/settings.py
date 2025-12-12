@@ -40,6 +40,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("LOG_LEVEL", "log_level"),
     )
 
+    api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("API_KEY", "api_key"),
+        description="Secret key to protect the API"
+    )
+
     @field_validator("symbols_futures")
     @classmethod
     def parse_symbols_list(cls, v: Union[str, List[str]]) -> List[str]:
