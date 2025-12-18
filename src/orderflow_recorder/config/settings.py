@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # Allow passing comma-separated string which gets parsed to list
     symbols_futures: Union[List[str], str] = ["btcusdt", "ethusdt"]
     
-    futures_streams_depth: str = "depth5@100ms"
+    futures_streams_depth: str = "depth20@100ms"
     futures_streams_trades: str = "aggTrade"
 
     gcs_bucket_name: str = Field(

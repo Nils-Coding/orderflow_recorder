@@ -8,40 +8,33 @@ This document defines the strategy for processing raw high-frequency cryptocurre
 2.  **Process:** A daily Cloud Run Job aggregates these chunks.
 3.  **Output:** Clean, single-file CSVs per day/symbol (at 1s and 1m resolution) are stored in GCS for team consumption.
 
+**Changelog:**
+*   **2025-12-16 14:46 UTC:** Switched from `depth5@100ms` to **`depth20@100ms`**. This provides deeper visibility into liquidity walls and spoofing attempts (Top 20 levels instead of Top 5).
+
 ---
 
-## 2. Financial Analytics View
-We go beyond standard OHLC (Open, High, Low, Close) candles. The focus is on **Orderflow**, which analyzes the aggressive buying/selling pressure (Trades) against the passive liquidity (Orderbook).
+## 2. Financial Analytics View (The "Why")
 
-### A. Price & Volume (The "What")
-Standard market data metrics.
+We combine **Trades** (Aggression/Action) with **Orderbook Snapshots** (Liquidity/Intent) to find predictive patterns.
 
-| Metric | Definition | Financial Interpretation |
-| :--- | :--- | :--- |
-| **OHLC** | Open, High, Low, Close Price | Standard price action. |
-| **VWAP** | Volume Weighted Average Price | The "fair" price of the interval. Institutional benchmark. Price > VWAP implies bullish intraday sentiment. |
-| **Volume_Total** | Total quantity traded (in Base Asset, e.g., BTC) | Activity level. High volume validates price moves; low volume suggests lack of conviction. |
-| **Trade_Count** | Number of individual executions | **Whale vs. Retail detection.** <br>High Volume + Low Trade Count = Large Players active.<br>High Volume + High Trade Count = HFT/Retail herd. |
-
-### B. Orderflow & Delta (The "Why")
-Analyzing who initiated the trade (Aggressor).
-*   **Buyer Aggressor:** Trader placed a MARKET BUY order (taking liquidity from Ask).
-*   **Seller Aggressor:** Trader placed a MARKET SELL order (taking liquidity from Bid).
+### A. Orderflow Signals (Trades)
+Who is aggressive? Who is paying the spread?
 
 | Metric | Definition | Financial Interpretation |
 | :--- | :--- | :--- |
-| **Volume_Buy** | Volume where aggressor was Buyer | Buying pressure. |
-| **Volume_Sell** | Volume where aggressor was Seller | Selling pressure. |
-| **Volume_Delta** | `Volume_Buy - Volume_Sell` | **Net Aggressor Pressure.**<br>**Divergence:** If Price makes a New High but Delta makes a Lower High, the move is running out of steam (Absorption). |
-| **CVD** | Cumulative Volume Delta (Intraday) | Running total of Delta since 00:00 UTC. Shows the trend of aggression throughout the day. |
+| **Volume_Delta** | `Vol_Buy - Vol_Sell` | **Net Aggressor Pressure.** Divergence between Price (Higher High) and Delta (Lower High) often signals a reversal (Absorption). |
+| **CVD** | Cumulative Volume Delta | Intraday trend of aggression. |
+| **Trade_Count** | Number of executions | High Vol + Low Count = Whales. High Vol + High Count = Retail FOMO. |
 
-### C. Liquidity & Orderbook (The "Resistance")
-Analyzing the passive limit orders resting in the book.
+### B. Liquidity Signals (Orderbook Snapshots)
+The "Stroboscope" View: We see the state of the book every 100ms. We do not reconstruct the full matching engine, but compare snapshots to detect intent.
 
-| Metric | Definition | Financial Interpretation |
+| Pattern | Definition | Interpretation |
 | :--- | :--- | :--- |
-| **Avg_Spread** | Average `(BestAsk - BestBid)` | **Cost of Liquidity.** Spreads widen during volatility or uncertainty. Tight spreads indicate healthy liquidity. |
-| **L1_Imbalance** | `BidQty / (BidQty + AskQty)` (at Best Price) | **Orderbook Pressure.** <br>> 0.5: More support (Bids) than resistance (Asks).<br>< 0.5: More resistance than support.<br>*Note: Limit orders can be pulled (spoofing), so this is less reliable than Trade Delta.* |
+| **Absorption** | Trades indicate heavy SELLING, but Price stays stable at a Support level. | A passive Buyer (Iceberg) is absorbing the selling pressure. **Bullish Reversal.** |
+| **Exhaustion** | Trades indicate heavy BUYING, Orderbook Ask is thin, but Price stops rising. | Buyers are running out of steam or hitting hidden walls. **Bearish Reversal.** |
+| **Liquidity Vacuum** | Ask-Side liquidity suddenly vanishes (Spoofers pull orders). | Path of least resistance is up. Volatility is likely to spike. |
+| **Imbalance** | Ratio of Bid Qty vs Ask Qty (e.g. at Top 20 levels). | Predictive for short-term direction pressure. |
 
 ---
 
@@ -49,43 +42,31 @@ Analyzing the passive limit orders resting in the book.
 
 ### Data Source (Raw)
 *   **Trades:** `timestamp, price, quantity, is_buyer_maker`
-    *   *Note on `is_buyer_maker`:* If `True`, the maker was the buyer -> Aggressor was Seller. If `False`, Aggressor was Buyer.
-*   **Depth:** `timestamp, bids (json), asks (json)` (Snapshots)
+*   **Depth (Snapshots):** `timestamp, bids (json), asks (json)`
+    *   Since we use `depth20@100ms` (Partial Depth Streams), we handle these as independent snapshots. We do NOT maintain a local orderbook via delta-updates, as we lack the intermediate events. Instead, we perform **Snapshot Comparison** (e.g., did a wall disappear between T1 and T2?).
 
 ### Output Schema (Aggregated CSV)
-Files will be named: `aggregated/{SYMBOL}/{YYYY-MM-DD}_{RESOLUTION}.csv` (e.g., `2024-05-20_1s.csv`).
+Files will be named: `aggregated/{SYMBOL}/{YYYY-MM-DD}_{RESOLUTION}.csv` (e.g., `2025-12-11_1s.csv`).
 
 **Columns:**
 1.  `timestamp` (UTC, ISO8601)
-2.  `open`
-3.  `high`
-4.  `low`
-5.  `close`
-6.  `vwap`
-7.  `vol_total` (Sum of qty)
-8.  `vol_buy` (Sum of qty where is_buyer_maker=False)
-9.  `vol_sell` (Sum of qty where is_buyer_maker=True)
-10. `vol_delta` (vol_buy - vol_sell)
-11. `trade_count` (Count of rows)
-12. `avg_spread` (Mean of ask[0] - bid[0])
-13. `avg_bid_qty` (Mean of bid[0] qty)
-14. `avg_ask_qty` (Mean of ask[0] qty)
+2.  `open, high, low, close`
+3.  `vwap`
+4.  `vol_total, vol_buy, vol_sell, vol_delta`
+5.  `trade_count`
+6.  `avg_spread` (Mean of ask[0] - bid[0])
+7.  `imbalance_l20` (Optional future feature: BidQty / (BidQty + AskQty))
 
 ### Handling Gaps
-*   **Price (OHLC):** Forward Fill. If no trades occur in a second, Close of T-1 becomes Open/High/Low/Close of T.
-*   **Volume/Counts:** Zero Fill. If no trades, Volume is 0.
-
-### Tech Stack
-*   **Language:** Python
-*   **Engine:** Pandas (processing in-memory is sufficient for daily chunks).
-*   **Storage:** Google Cloud Storage.
+*   **Price (OHLC):** Forward Fill.
+*   **Volume/Counts:** Zero Fill.
 
 ---
 
-## 4. Workflow for Team
-1.  **Daily Job** runs at 01:00 UTC.
-2.  It processes the previous day (00:00-23:59).
-3.  It uploads `aggregated/BTCUSDT/YYYY-MM-DD_1s.csv`.
-4.  **Analysts** download these specific files for research (Python/Jupyter/Excel).
-5.  **Archive:** Raw files are zipped to `archive/BTCUSDT/YYYY-MM-DD_raw.zip` to reduce costs.
+## 4. AI & ML Strategy (Outlook)
+For predictive modeling, we will treat this as a Time-Series Classification problem ("Will price go UP or DOWN in next 5 mins?").
 
+*   **Approach:** Instead of Large Language Models (LLMs), we will focus on:
+    1.  **Gradient Boosting (XGBoost/LightGBM):** Strong baseline for tabular features (Delta, Imbalance).
+    2.  **Time-Series Foundation Models (Chronos/Moirai):** New transformer-based models specifically for numerical time-series.
+*   **Role of LLMs:** Used as "Analysts" to generate textual reports describing the detected patterns ("Detected Divergence at 14:00 UTC"), but not for the raw number crunching.
